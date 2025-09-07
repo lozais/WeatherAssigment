@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Operational Weather Viewer</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; color: #111; }
+    header { padding: .75rem 1rem; border-bottom: 1px solid #eee; display:flex; gap:1rem; align-items:center; }
+    main { padding: 1rem; display:flex; flex-direction:column; align-items:center; gap:1rem; }
+    .row { display:flex; gap:.75rem; align-items:center; flex-wrap:wrap; }
+    .group { display:flex; flex-direction:column; gap:.25rem; }
+    .label { font-size:.9rem; color:#555; }
+    select, button, input[type=range] { font-size: 1rem; }
+    #map { max-width: 100%; height: auto; box-shadow: 0 1px 8px rgba(0,0,0,.08); background:#f7f7f7; }
+    #timebar { display:flex; gap:.5rem; align-items:center; width: 100%; max-width: 980px; }
+    #timebar input[type=range] { flex:1; }
+    #meta { font-size:.9rem; color:#444; }
+    .muted { color:#777; font-size:.9rem; }
+    .warn { color:#b00; font-weight:600; }
+  </style>
+</head>
+<body>
+  <header>
+    <strong>Operational Weather Viewer</strong>
+    <span id="stamp" class="muted"></span>
+  </header>
+
+  <main>
+    <div class="row">
+      <div class="group">
+        <label class="label" for="domain">Domain</label>
+        <select id="domain">
+          <option value="regional">Regional</option>
+          <option value="global">Global</option>
+        </select>
+      </div>
+      <div class="group">
+        <label class="label" for="variable">Variable</label>
+        <select id="variable"></select>
+      </div>
+    </div>
+
+    <img id="map" alt="map (frame)" />
+
+    <div id="timebar">
+      <button id="play" title="Play/Pause">▶</button>
+      <input id="slider" type="range" min="0" max="0" value="0" step="1" />
+      <span id="tlabel" class="muted"></span>
+    </div>
+
+    <div id="meta" class="muted"></div>
+
+    <div class="muted">Weather forecast viewer for Skyfora assignment. </div>
+  </main>
+
+  <script>
+    let M = null;     // manifest
+    let playing = false;
+    let timer = null;
+
+    const el = {
+      domain: document.getElementById('domain'),
+      variable: document.getElementById('variable'),
+      map: document.getElementById('map'),
+      slider: document.getElementById('slider'),
+      tlabel: document.getElementById('tlabel'),
+      play: document.getElementById('play'),
+      meta: document.getElementById('meta'),
+      stamp: document.getElementById('stamp'),
+    };
+
+    async function loadManifest() {
+      try {
+        const r = await fetch('./manifest.json', { cache: 'no-store' });
+        if (!r.ok) throw new Error(`HTTP ${r.status}`);
+        M = await r.json();
+        el.stamp.textContent = M.generated_at ? `manifest updated ${M.generated_at}` : '';
+        initUI();
+      } catch (err) {
+        el.stamp.innerHTML = `<span class="warn">Failed to load manifest.json (${err.message}).</span> Serve from project root and open <code>/web/</code>.`;
+      }
+    }
+
+    function initUI() {
+      el.domain.onchange = onDomainChange;
+      el.variable.onchange = renderFrame;
+      el.slider.oninput = renderFrame;
+      el.play.onclick = togglePlay;
+
+      if (!el.domain.value) el.domain.value = 'regional';
+      onDomainChange();
+    }
+
+    function onDomainChange() {
+      const d = el.domain.value;
+      const block = M?.[d];
+      if (!block) {
+        el.variable.innerHTML = `<option>(no data)</option>`;
+        el.map.removeAttribute('src');
+        return;
+      }
+
+      // Variables
+      const vars = Object.keys(block.variables || {});
+      el.variable.innerHTML = vars.length ? vars.map(v => `<option>${v}</option>`).join('') : `<option>(no maps)</option>`;
+      if (!el.variable.value && vars.length) el.variable.value = vars[0];
+
+      // Slider over manifest times
+      el.slider.min = 0;
+      el.slider.max = Math.max((block.times || []).length - 1, 0);
+      el.slider.value = 0;
+
+      renderFrame();
+    }
+
+    // Frame for slider index
+    function pickFrame(frames, i, times) {
+      if (!frames || frames.length === 0) return '';
+      if (!times || times.length === 0) return frames[Math.min(i, frames.length-1)];
+      const stride = Math.max(1, Math.round(times.length / frames.length));
+      const fidx = Math.min(frames.length - 1, Math.floor(i / stride));
+      return frames[fidx];
+    }
+
+    function withBuster(url) {
+      if (!url) return '';
+      const v = encodeURIComponent(M?.generated_at || Date.now());
+      return `${url}?v=${v}`;
+    }
+
+    function renderFrame() {
+      const d = el.domain.value;
+      const v = el.variable.value;
+      const block = M?.[d];
+      if (!block) return;
+
+      const i = +el.slider.value;
+      const times = block.times || [];
+      const frames = (block.variables || {})[v] || [];
+      const url = pickFrame(frames, i, times);
+
+      el.map.src = withBuster(url);
+      el.tlabel.textContent = times[i] || '';
+      el.meta.textContent = `${d} · ${v}${times[i] ? ' · ' + times[i] : ''}`;
+
+      // Disable play if single frame
+      el.play.disabled = frames.length <= 1;
+    }
+
+    function togglePlay() {
+      playing = !playing;
+      el.play.textContent = playing ? '⏸' : '▶';
+      if (playing) {
+        const step = () => {
+          const max = +el.slider.max;
+          let v = +el.slider.value + 1;
+          if (v > max) v = 0;
+          el.slider.value = v;
+          renderFrame();
+        };
+        timer = setInterval(step, 600);
+      } else {
+        clearInterval(timer);
+      }
+    }
+
+    loadManifest();
+  </script>
+</body>
+</html>
